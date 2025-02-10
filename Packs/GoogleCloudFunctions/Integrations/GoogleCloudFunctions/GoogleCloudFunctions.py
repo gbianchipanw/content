@@ -30,6 +30,7 @@ class GoogleClient:
         """
         self.project = kwargs.get('project', '')
         self.region = kwargs.get('region', '-')
+        self.client_secret = client_secret
         credentials = service_account.ServiceAccountCredentials.from_json_keyfile_dict(client_secret, scopes=scopes)
         if proxy or insecure:
             http_client = credentials.authorize(self.get_http_client_with_proxy(proxy, insecure))
@@ -90,14 +91,30 @@ class GoogleClient:
         return self.service.projects().locations().functions().get(name=name).execute()
 
     def execute_function(self, function_name: str, data: str, region, project_id):
+        from google.oauth2 import service_account
         if project_id:
             self.project = project_id
         if region:
             self.region = region
         name = f'projects/{self.project}/locations/{self.region}/functions/{function_name}'
-        body = {'data': data}
-        return self.service.projects().locations().functions().call(name=name, body=body).execute()
-
+        cf_info = self.service.projects().locations().functions().get(name=name).execute()
+        function_url = cf_info.get("url")
+        credentials = service_account.IDTokenCredentials.from_service_account_info(
+                self.client_secret, target_audience=function_url
+            )
+        auth_req = Request()
+        credentials.refresh(auth_req)
+        access_token = credentials.token
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        response = requests.post(function_url, headers=headers, data=data)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"Failed to execute function call. Error: {response.content}")
+    
 
 '''COMMAND FUNCTIONS'''
 
@@ -204,7 +221,7 @@ def main():
     proxy = params.get('proxy', False)
     insecure = params.get('insecure', False)
     scopes = ['https://www.googleapis.com/auth/cloud-platform']
-    client = GoogleClient('cloudfunctions', 'v1', credentials_json, scopes, proxy, insecure, project=project,
+    client = GoogleClient('cloudfunctions', 'v2', credentials_json, scopes, proxy, insecure, project=project,
                           region=region)
 
     commands = {
